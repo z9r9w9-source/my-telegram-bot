@@ -1,26 +1,34 @@
 import os
-import logging
+import asyncio
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from aiohttp import web
 import yt_dlp
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# خادم الويب الخاص بمنصة Render للتثبيت المجاني
+async def handle(request):
+    return web.Response(text="Bot is running!")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    await update.message.reply_html(
-        f"أهلاً بك {user.mention_html()}! أرسل لي رابط فيديو وسأقوم بتحميله لك."
-    )
+async def web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# دالة الترحيب عند بدء البوت
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أهلاً بك! أرسل لي رابط الفيديو وسأقوم بتحميله لك فوراً.")
+
+# دالة التحميل مع yt-dlp
+async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
     if not url.startswith("http"):
         return
 
-    status = await update.message.reply_text("⏳ جارٍ تنزيل الفيديو، انتظر قليلًا...")
+    await update.message.reply_text("جاري تحميل الفيديو، انتظر قليلاً...")
 
     ydl_opts = {
         'format': 'best',
@@ -31,27 +39,34 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        await update.message.reply_video(video=open('video.mp4', 'rb'))
-        
         if os.path.exists('video.mp4'):
+            await update.message.reply_video(video=open('video.mp4', 'rb'))
             os.remove('video.mp4')
-            
+        else:
+            await update.message.reply_text("حدث خطأ أثناء تحميل الفيديو.")
     except Exception as e:
-        await update.message.reply_text(f"حدث خطأ أثناء التنزيل: {e}")
+        await update.message.reply_text(f"حدث خطأ: {e}")
 
-def main() -> None:
-    TOKEN = os.getenv("BOT_TOKEN")
-    
-    if not TOKEN:
-        print("Error: BOT_TOKEN is not set!")
+async def main():
+    token = os.environ.get("BOT_TOKEN")
+    if not token:
+        print("Error: BOT_TOKEN is not set")
         return
 
-    application = Application.builder().token(TOKEN).build()
-
+    application = ApplicationBuilder().token(token).build()
+    
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), download_video))
 
-    application.run_polling()
+    # تشغيل خادم الويب ثم البوت
+    await web_server()
+    print("Bot and Web Server are starting...")
+    
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
